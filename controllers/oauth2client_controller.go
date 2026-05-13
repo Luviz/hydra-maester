@@ -250,7 +250,31 @@ func (r *OAuth2ClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// resolveClientSecret resolves the client secret from a SecretKeyRef.
+// Returns the secret string and true if resolved, or empty and false otherwise.
+func (r *OAuth2ClientReconciler) resolveClientSecret(ctx context.Context, c *hydrav1alpha1.OAuth2Client) (string, bool, error) {
+	if c.Spec.ClientSecret == nil || c.Spec.ClientSecret.SecretKeyRef == nil {
+		return "", false, nil
+	}
+
+	secret := &apiv1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      c.Spec.ClientSecret.SecretKeyRef.Name,
+		Namespace: c.Namespace,
+	}, secret); err != nil {
+		return "", false, fmt.Errorf("failed to get secret %q: %w", c.Spec.ClientSecret.SecretKeyRef.Name, err)
+	}
+
+	val, ok := secret.Data[c.Spec.ClientSecret.SecretKeyRef.Key]
+	if !ok {
+		return "", false, fmt.Errorf("key %q not found in secret %q", c.Spec.ClientSecret.SecretKeyRef.Key, c.Spec.ClientSecret.SecretKeyRef.Name)
+	}
+
+	return string(val), true, nil
+}
+
 func (r *OAuth2ClientReconciler) registerOAuth2Client(ctx context.Context, c *hydrav1alpha1.OAuth2Client, credentials *hydra.Oauth2ClientCredentials) error {
+
 	if err := r.unregisterOAuth2Clients(ctx, c); err != nil {
 		return err
 	}
@@ -267,6 +291,16 @@ func (r *OAuth2ClientReconciler) registerOAuth2Client(ctx context.Context, c *hy
 		}
 
 		return fmt.Errorf("failed to construct hydra client for object: %w", err)
+	}
+
+	// Resolve clientSecret from SecretKeyRef if configured
+	if secretVal, ok, err := r.resolveClientSecret(ctx, c); err != nil {
+		if updateErr := r.updateReconciliationStatusError(ctx, c, hydrav1alpha1.StatusInvalidSecret, err); updateErr != nil {
+			return updateErr
+		}
+		return err
+	} else if ok {
+		oauth2client.Secret = &secretVal
 	}
 
 	if credentials != nil {
@@ -330,18 +364,45 @@ func (r *OAuth2ClientReconciler) updateRegisteredOAuth2Client(ctx context.Contex
 		return fmt.Errorf("failed to construct hydra client for object: %w", err)
 	}
 
-	if _, err := hydraClient.PutOAuth2Client(oauth2client.WithCredentials(credentials)); err != nil {
+	// Apply existing credentials first, then override with resolved clientSecret
+	oauth2client.WithCredentials(credentials)
+
+	// Resolve clientSecret from SecretKeyRef if configured (takes precedence)
+	if secretVal, ok, err := r.resolveClientSecret(ctx, c); err != nil {
+		if updateErr := r.updateReconciliationStatusError(ctx, c, hydrav1alpha1.StatusInvalidSecret, err); updateErr != nil {
+			return updateErr
+		}
+		return err
+	} else if ok {
+		oauth2client.Secret = &secretVal
+	}
+
+	if _, err := hydraClient.PutOAuth2Client(oauth2client); err != nil {
 		if updateErr := r.updateReconciliationStatusError(ctx, c, hydrav1alpha1.StatusUpdateFailed, err); updateErr != nil {
 			return updateErr
 		}
+		return r.ensureEmptyStatusError(ctx, c)
 	}
+
+	// Update the K8s Secret with the new client secret value
+	if oauth2client.Secret != nil {
+		existingSecret := &apiv1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{Name: c.Spec.SecretName, Namespace: c.Namespace}, existingSecret); err != nil {
+			return err
+		}
+		existingSecret.Data[ClientSecretKey] = []byte(*oauth2client.Secret)
+		if err := r.Update(ctx, existingSecret); err != nil {
+			return err
+		}
+	}
+
 	return r.ensureEmptyStatusError(ctx, c)
 }
 
 func (r *OAuth2ClientReconciler) unregisterOAuth2Clients(ctx context.Context, c *hydrav1alpha1.OAuth2Client) error {
 	// if a required field is empty, that means this is deleted after
 	// the finalizers have done their job, so just return
-	if c.Spec.Scope == "" || c.Spec.SecretName == "" {
+	if c.Spec.SecretName == "" {
 		return nil
 	}
 
