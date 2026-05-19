@@ -119,7 +119,18 @@ type TokenLifespans struct {
 type OAuth2ClientSpec struct {
 
 	// ClientName is the human-readable string name of the client to be presented to the end-user during authorization.
+	// WARNING: If UseClientNameAsId is enabled, changing clientName requires the resource to be deleted and recreated
+	// because the client_id is immutable once registered.
 	ClientName string `json:"clientName,omitempty"`
+
+	// +kubebuilder:validation:type=bool
+	// +kubebuilder:default=false
+	//
+	// UseClientNameAsId when set to true will use the clientName as the client_id when registering the client in Hydra.
+	// WARNING: Enabling this flag means the client_id is derived from clientName. If clientName is changed,
+	// the resource must be deleted and recreated since client_id is immutable. Additionally, duplicate clientNames
+	// across resources will cause registration conflicts.
+	UseClientNameAsId bool `json:"useClientNameAsId,omitempty"`
 
 	// ClientSecret defines the client secret value. Use either `value` for a
 	// plain string or `secretKeyRef` to reference a key in a Kubernetes Secret.

@@ -146,6 +146,13 @@ func FromOAuth2Client(c *hydrav1alpha1.OAuth2Client) (*OAuth2ClientJSON, error) 
 		return nil, err
 	}
 
+	if c.Spec.UseClientNameAsId {
+		if c.Spec.ClientName == "" {
+			return nil, fmt.Errorf("clientName must not be empty when useClientNameAsId is enabled")
+		}
+		client.ClientID = ptr.To(c.Spec.ClientName)
+	}
+
 	if c.Spec.ClientSecret != nil {
 		if c.Spec.ClientSecret.Has() {
 			if c.Spec.ClientSecret.Value != "" {

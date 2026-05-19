@@ -198,6 +198,51 @@ func (r *OAuth2ClientReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
+	// When UseClientNameAsId is enabled and the existing secret has a different ID,
+	// delete the old Hydra client and re-register with clientName as ID, then update the secret.
+	if oauth2client.Spec.UseClientNameAsId && string(credentials.ID) != oauth2client.Spec.ClientName {
+		r.Log.Info(fmt.Sprintf("UseClientNameAsId enabled: re-registering client %s/%s with clientName as ID", oauth2client.Name, oauth2client.Namespace))
+
+		hydraClient, err := r.getHydraClientForClient(oauth2client)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// Delete old client from Hydra
+		if err := hydraClient.DeleteOAuth2Client(string(credentials.ID)); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// Build new client with clientName as ID
+		newClient, err := hydra.FromOAuth2Client(&oauth2client)
+		if err != nil {
+			if updateErr := r.updateReconciliationStatusError(ctx, &oauth2client, hydrav1alpha1.StatusRegistrationFailed, err); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, nil
+		}
+
+		// Register new client in Hydra
+		created, err := hydraClient.PostOAuth2Client(newClient)
+		if err != nil {
+			if updateErr := r.updateReconciliationStatusError(ctx, &oauth2client, hydrav1alpha1.StatusRegistrationFailed, err); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, nil
+		}
+
+		// Update existing secret with new client ID
+		secret.Data[ClientIDKey] = []byte(*created.ClientID)
+		if created.Secret != nil {
+			secret.Data[ClientSecretKey] = []byte(*created.Secret)
+		}
+		if err := r.Update(ctx, &secret); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, r.ensureEmptyStatusError(ctx, &oauth2client)
+	}
+
 	hydraClient, err := r.getHydraClientForClient(oauth2client)
 	if err != nil {
 		r.Log.Error(err, fmt.Sprintf(
