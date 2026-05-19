@@ -130,4 +130,42 @@ func TestTypes(t *testing.T) {
 		assert.Equal(t, true, parsedClient.SkipLogoutConsent)
 		assert.Equal(t, int64(1234567890), parsedClient.ClientSecretExpiresAt)
 	})
+
+	t.Run("Test UseClientNameAsId sets client_id to clientName", func(t *testing.T) {
+		c := hydrav1alpha1.OAuth2Client{
+			Spec: hydrav1alpha1.OAuth2ClientSpec{
+				ClientName:        "my-service",
+				UseClientNameAsId: true,
+			},
+		}
+
+		parsedClient, err := hydra.FromOAuth2Client(&c)
+		assert.NoError(t, err)
+		assert.NotNil(t, parsedClient.ClientID)
+		assert.Equal(t, "my-service", *parsedClient.ClientID)
+	})
+
+	t.Run("Test UseClientNameAsId fails when clientName is empty", func(t *testing.T) {
+		c := hydrav1alpha1.OAuth2Client{
+			Spec: hydrav1alpha1.OAuth2ClientSpec{
+				UseClientNameAsId: true,
+			},
+		}
+
+		_, err := hydra.FromOAuth2Client(&c)
+		assert.ErrorContains(t, err, "clientName must not be empty")
+	})
+
+	t.Run("Test UseClientNameAsId false does not set client_id", func(t *testing.T) {
+		c := hydrav1alpha1.OAuth2Client{
+			Spec: hydrav1alpha1.OAuth2ClientSpec{
+				ClientName:        "my-service",
+				UseClientNameAsId: false,
+			},
+		}
+
+		parsedClient, err := hydra.FromOAuth2Client(&c)
+		assert.NoError(t, err)
+		assert.Nil(t, parsedClient.ClientID)
+	})
 }
